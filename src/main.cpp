@@ -72,11 +72,11 @@ void liftUp(){
     wio.LedSetRGB(0x00,0x00,0xA0);
     setStatus((status & 0xF0), LIFTING);
     if((status & 0xF0) == NO_ITEM){
-        servoController.setMaxTorque(servoId, 0x1E); //0x14 is 20
+        servoController.setMaxTorque(servoId, 0x28); //0x14 is 20
         servoController.restartServo(servoId);
     }
     servoController.turnOnTorque(servoId);
-    servoController.moveServo(servoId, 850, 50);
+    servoController.moveServo(servoId, 700, 50);
     delay(500);
 //    servoController.turnOffTorque(servoId);
     setStatus((status & 0xF0), LIFT_UP);
@@ -363,7 +363,7 @@ void loop() {
         if(((status & 0x0F) == LIFT_UP) || ((status & 0x0F) == OVER_TIME)){
           currentLoad = servoController.getCurrentServoLoad(servoId);
           SerialUSB.print("load: ");SerialUSB.println(currentLoad);
-          if(currentLoad > 40){
+          if(currentLoad > 35){
             setStatus(HAVE_ITEM, (status & 0x0F));
           }else{
             setStatus(NO_ITEM, (status & 0x0F));
