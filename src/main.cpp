@@ -37,6 +37,7 @@ const char IRQ_STATUS_CHECKE = 0x02;
 const char IRQ_ACCEPT_DIRECT_METHOD = 0x04;
 const char IRQ_SERVO_STATUS = 0x04;
 const char IRQ_OVER_TIME = 0x08;
+const char IRQ_ITEM_WEIGHT= 0x10;
 
 char imsi[16];
 char irq_event =0x00;
@@ -46,7 +47,12 @@ char status_change_event = 0x00;
 const int INTARVAL = 500;
 const char servoId = 0x01;
 
-const int loadAverageBufferSize = 20;
+const int scaleLoadWeightLoad = 70;
+const int loadAverageBufferSize = 30;
+short loadAverageBuffer[loadAverageBufferSize] = {0};
+int averageCounter = 0;
+short currentLoad = 0;
+
 int loadCounter = 0;
 
 //IoT Hub Direct method.
@@ -72,13 +78,14 @@ void liftUp(){
     wio.LedSetRGB(0x00,0x00,0xA0);
     setStatus((status & 0xF0), LIFTING);
     if((status & 0xF0) == NO_ITEM){
-        servoController.setMaxTorque(servoId, 0x28); //0x14 is 20
+        servoController.setMaxTorque(servoId, 0x3C); //0x14 is 20
         servoController.restartServo(servoId);
     }
     servoController.turnOnTorque(servoId);
-    servoController.moveServo(servoId, 700, 50);
-    delay(500);
+    servoController.moveServo(servoId, 750, 50);
+    delay(1000);
 //    servoController.turnOffTorque(servoId);
+    averageCounter = 1;//loadAverageBufferSize-1;
     setStatus((status & 0xF0), LIFT_UP);
     SerialUSB.println("End Lift UP!");
 }
@@ -89,10 +96,10 @@ void liftDown(){
     servoController.setMaxTorque(servoId, 0x64); //0x14 is 20
     servoController.restartServo(servoId);
     servoController.turnOnTorque(servoId);
-    servoController.moveServo(servoId, 0, 50);
-    delay(500);
-    servoController.turnOffTorque(servoId);
     setStatus((status & 0xF0), LIFT_DOWN);
+    servoController.moveServo(servoId, 0, 50);
+    delay(1000);
+    servoController.turnOffTorque(servoId);
     SerialUSB.println("End Lift DOWN!");
 }
 
@@ -104,7 +111,7 @@ void liftToggle(){
     }
 }
 
-void statusControll(){
+/*void statusControll(){
     if(status == (OVER_TIME | HAVE_ITEM)){
         wio.LedSetRGB(0xff,0x00,0x00);
         SerialUSB.println("Please take something");
@@ -125,7 +132,7 @@ void statusControll(){
     }else if(status == (NO_ITEM | LIFT_DOWN)){
         wio.LedSetRGB(0x00,0x00,0x00);
     }
-}
+}*/
 
 /*int getLoadBuffer(){
     int sum = 0;
@@ -138,11 +145,16 @@ void statusControll(){
 
 void checkLiftState(){
     short currentAngle = servoController.getCurrentAngle(servoId);
-    if(currentAngle > 500){
+    if(currentAngle >= 650){
+        if((status & 0x0F) == LIFT_UP){return;}
         if((status & 0x0F) != OVER_TIME){
+            SerialUSB.println("change status on UP");
             setStatus((status & 0xF0) , LIFT_UP);
         }
     }else{
+        if((status & 0x0F) == LIFT_DOWN){return;}
+        SerialUSB.println("change status on DOWN");
+        //averageCounter = 0;
         setStatus((status & 0xF0), LIFT_DOWN);
     }
 }
@@ -265,6 +277,11 @@ void changeDeviceMode(){
   irq_event = (irq_event | IRQ_SERVO_STATUS);
 }
 
+void checkWait(){
+    irq_event = (irq_event | IRQ_ITEM_WEIGHT);
+
+}
+
 void setup() {
     wio.Init();
     SerialUSB.println("######## Start up device");
@@ -322,6 +339,14 @@ void setup() {
     SerialUSB.println("### Initial GPIO");
     pinMode(BUTTON_PIN, INPUT);
 
+    Timer1.pause();
+    Timer1.setPrescaleFactor(10000);
+    Timer1.setOverflow(1680);// 100msec
+    Timer3.setCompare(1, 1680);
+    Timer1.attachInterrupt(1,checkWait);
+    Timer1.refresh();
+    Timer1.resume();
+
     Timer3.pause();                               
     Timer3.setPrescaleFactor(10000);              // Timer clock 168MHz/10k = 16800Hz 
     Timer3.setOverflow(33600);                    //Counter is 33600 = 2 sec.
@@ -356,10 +381,43 @@ void loop() {
         liftToggle();      
     }
 
+    if(irq_event & IRQ_ITEM_WEIGHT){
+        int counter = averageCounter % loadAverageBufferSize;        
+        short threshold = 0;
+        if(((status & 0x0F) == LIFT_UP) || ((status & 0x0F) == OVER_TIME)){
+          loadAverageBuffer[counter] = servoController.getCurrentServoLoad(servoId);
+          SerialUSB.print("count");SerialUSB.print(averageCounter);
+          SerialUSB.print(" ,load: ");SerialUSB.println(loadAverageBuffer[counter]);
+          ++averageCounter;
+          if(counter == 0){
+              short buffer = 0;
+              for(int n=0; n < loadAverageBufferSize; n++){
+                  buffer += loadAverageBuffer[n];
+              }
+              currentLoad = buffer / loadAverageBufferSize;
+              SerialUSB.print("Average: ");SerialUSB.println(currentLoad);
+              if((status & 0xF0) == NO_ITEM){
+                  threshold = 95;
+              }else{
+                  threshold = 100;              
+              }
+              if(currentLoad >= threshold){
+                if((status & 0xF0) == HAVE_ITEM){return;}
+                setStatus(HAVE_ITEM, (status & 0x0F));
+              }else{
+                if((status & 0xF0) == NO_ITEM){return;}
+                setStatus(NO_ITEM, (status & 0x0F));
+              }
+          }
+
+        }
+        
+    }
+
     if(irq_event & IRQ_STATUS_CHECKE){
         SerialUSB.println("CHECK_STATUS");
         checkLiftState();    
-        short currentLoad = 0.0;  
+        /*short currentLoad = 0.0;  
         if(((status & 0x0F) == LIFT_UP) || ((status & 0x0F) == OVER_TIME)){
           currentLoad = servoController.getCurrentServoLoad(servoId);
           SerialUSB.print("load: ");SerialUSB.println(currentLoad);
@@ -368,20 +426,25 @@ void loop() {
           }else{
             setStatus(NO_ITEM, (status & 0x0F));
           }
-        }
+        }*/
         char data[300];
         if(status_change_event == 0x01){
             //SerialUSB.print("status: ");SerialUSB.println(getStatusString(status));
             String sta = getStatusString(status);
 //                        {"deviceId":"myDevice", "liftStatus":"DOWN", "itemStatus":"In", "weight":90.5}
-            sprintf(data, "{\"imsi\":\"%s\", %s, \"weight\":%d}", imsi, sta.c_str(), currentLoad);
+            int sendWeight = currentLoad + scaleLoadWeightLoad;
+            sprintf(data, "{\"imsi\":\"%s\", %s, \"weight\":%d}", imsi, sta.c_str(), sendWeight);
             SerialUSB.println(data);
             MqttClient.publish(OUT_TOPIC, data);
             status_change_event = 0x00;
+            currentLoad = 0;
+
         }
     }
 
     if(irq_event & IRQ_SERVO_STATUS){
+      SerialUSB.print("current:");SerialUSB.println(getStatusString(status));
+      SerialUSB.print("prev:");SerialUSB.println(getStatusString(prevStatus));
       if(status == (OVER_TIME | HAVE_ITEM)){
         wio.LedSetRGB(0xff,0x00,0x00);
         SerialUSB.println("Please take something");
